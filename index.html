@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ASC Background</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #1a3a6b; }
+    svg { display: block; width: 100%; height: 100%; }
+
+    #download-panel {
+      position: fixed;
+      bottom: 22px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 18px;
+      background: rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 14px;
+      color: rgba(255, 255, 255, 0.85);
+      font-family: 'Inter', sans-serif;
+      font-size: 12px;
+      white-space: nowrap;
+      z-index: 100;
+    }
+
+    #download-panel .label {
+      font-size: 11px;
+      opacity: 0.65;
+      margin-right: 4px;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    #download-panel .sep {
+      width: 1px;
+      height: 18px;
+      background: rgba(255,255,255,0.2);
+      margin: 0 4px;
+    }
+
+    #download-panel button {
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 7px;
+      color: rgba(255, 255, 255, 0.9);
+      font-family: 'Inter', sans-serif;
+      font-size: 11.5px;
+      font-weight: 700;
+      padding: 5px 11px;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+
+    #download-panel button:hover {
+      background: rgba(255, 255, 255, 0.22);
+    }
+
+    #download-panel button:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    #download-panel button.saving {
+      opacity: 0.55;
+    }
+  </style>
+</head>
+<body>
+<svg id="bg" xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 1920 1080"
+     preserveAspectRatio="xMidYMid slice"
+     overflow="hidden">
+</svg>
+
+<div id="download-panel">
+  <span class="label">Save wallpaper</span>
+  <div class="sep"></div>
+  <button onclick="downloadWallpaper(1920,1080,this)">1920×1080</button>
+  <button onclick="downloadWallpaper(2560,1440,this)">2560×1440</button>
+  <button onclick="downloadWallpaper(3840,2160,this)">3840×2160</button>
+  <div class="sep"></div>
+  <button onclick="downloadWallpaper(2560,1600,this)">2560×1600</button>
+  <button onclick="downloadWallpaper(3024,1964,this)">3024×1964</button>
+  <button onclick="downloadWallpaper(3456,2234,this)">3456×2234</button>
+  <button onclick="downloadWallpaper(5120,2880,this)">5120×2880</button>
+</div>
+
+<script>
+(function () {
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  // ── Utilities ──────────────────────────────────────────────────────────────
+
+  function rand(min, max) {
+    return Math.random() * (max - min) + min;
+  }
+
+  function randInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  function makeSVGEl(tag, attrs) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      el.setAttribute(k, v);
+    }
+    return el;
+  }
+
+  function dist(x1, y1, x2, y2) {
+    const dx = x1 - x2, dy = y1 - y2;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  // ── Hex geometry (pointy-top) ───────────────────────────────────────────────
+
+  function hexPath(cx, cy, R) {
+    const angles = [-90, -30, 30, 90, 150, 210];
+    const pts = angles.map(a => {
+      const rad = a * Math.PI / 180;
+      return `${(cx + R * Math.cos(rad)).toFixed(3)},${(cy + R * Math.sin(rad)).toFixed(3)}`;
+    });
+    return `M ${pts.join(' L ')} Z`;
+  }
+
+  function axialToPixel(q, r, cx, cy, R) {
+    return {
+      x: cx + R * (Math.SQRT3 * q + Math.SQRT3 / 2 * r),
+      y: cy + R * (1.5 * r)
+    };
+  }
+
+  // Polyfill Math.SQRT3
+  Math.SQRT3 = Math.sqrt(3);
+
+  function hexesInRadius(N) {
+    const result = [];
+    for (let q = -N; q <= N; q++) {
+      for (let r = -N; r <= N; r++) {
+        if (Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) <= N) {
+          result.push({ q, r });
+        }
+      }
+    }
+    return result;
+  }
+
+  // ── Gradient background ────────────────────────────────────────────────────
+
+  const BASE_STOPS = [
+    { pos: 0,    h: 238, s: 60, l: 13 },  // top: near-night deep indigo
+    { pos: 0.38, h: 228, s: 52, l: 22 },  // upper: dark twilight blue
+    { pos: 0.63, h: 318, s: 28, l: 30 },  // mid: dusky purple transition
+    { pos: 0.82, h: 18,  s: 62, l: 40 },  // lower: muted sunset orange (warm zone starts at 82%)
+    { pos: 1,    h: 25,  s: 75, l: 48 },  // bottom: dim horizon glow
+  ];
+
+  function buildGradient(svg, defs) {
+    const hueShift   = rand(-15, 15);
+    const angleDelta = rand(-20, 20);
+    const angle      = 10 + angleDelta; // degrees: ~0 = top→bottom in SVG formula
+
+    // Convert CSS angle (clockwise from north) to SVG gradient direction
+    const rad = (90 - angle) * Math.PI / 180;
+    const x1 = (0.5 - 0.5 * Math.cos(rad)).toFixed(4);
+    const y1 = (0.5 - 0.5 * Math.sin(rad)).toFixed(4);
+    const x2 = (0.5 + 0.5 * Math.cos(rad)).toFixed(4);
+    const y2 = (0.5 + 0.5 * Math.sin(rad)).toFixed(4);
+
+    const grad = makeSVGEl('linearGradient', {
+      id: 'bgGrad',
+      x1, y1, x2, y2,
+      gradientUnits: 'objectBoundingBox'
+    });
+
+    let midH, midS, midL;
+    BASE_STOPS.forEach((stop, i) => {
+      const h = stop.h + hueShift;
+      const s = clamp(stop.s + rand(-8, 8), 30, 100);
+      const l = clamp(stop.l + rand(-5, 5), 40, 90);
+      if (i === 2) { midH = h; midS = s; midL = l; }
+      const st = makeSVGEl('stop', {
+        offset: stop.pos,
+        'stop-color': `hsl(${h.toFixed(1)},${s.toFixed(1)}%,${l.toFixed(1)}%)`
+      });
+      grad.appendChild(st);
+    });
+
+    defs.appendChild(grad);
+    return { midH, midS, midL };
+  }
+
+  function buildBackground(svg) {
+    svg.appendChild(makeSVGEl('rect', {
+      x: 0, y: 0, width: 1920, height: 1080,
+      fill: 'url(#bgGrad)'
+    }));
+  }
+
+  // ── Logo glow filter ───────────────────────────────────────────────────────
+
+  function buildLogoGlow(defs) {
+    const filter = makeSVGEl('filter', {
+      id: 'logoGlow',
+      x: '-25%', y: '-25%', width: '150%', height: '150%'
+    });
+    const blur = makeSVGEl('feGaussianBlur', { stdDeviation: '5', result: 'blur' });
+    const merge = makeSVGEl('feMerge', {});
+    merge.appendChild(makeSVGEl('feMergeNode', { in: 'blur' }));
+    merge.appendChild(makeSVGEl('feMergeNode', { in: 'SourceGraphic' }));
+    filter.appendChild(blur);
+    filter.appendChild(merge);
+    defs.appendChild(filter);
+  }
+
+  // ── Honeycomb clusters ─────────────────────────────────────────────────────
+
+  function buildCluster(svg, cx, cy, axialRadius, R) {
+    const fillOpacity   = rand(0.08, 0.18).toFixed(3);
+    const strokeOpacity = rand(0.25, 0.45).toFixed(3);
+    const hexes = hexesInRadius(axialRadius);
+    const g = makeSVGEl('g', {
+      fill: `rgba(255,255,255,${fillOpacity})`,
+      stroke: `rgba(255,255,255,${strokeOpacity})`,
+      'stroke-width': '1.2'
+    });
+    hexes.forEach(({ q, r }) => {
+      const { x, y } = axialToPixel(q, r, cx, cy, R);
+      g.appendChild(makeSVGEl('path', { d: hexPath(x, y, R) }));
+    });
+    svg.appendChild(g);
+  }
+
+  function buildClusters(svg, logoCx, logoCy) {
+    const R_SMALL = 35;
+    const LOGO_CLEARANCE = 280;
+    const numClusters = randInt(3, 7);
+
+    for (let i = 0; i < numClusters; i++) {
+      let cx, cy, placed = false;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        cx = rand(0.05, 0.95) * 1920;
+        cy = rand(0.05, 0.95) * 1080;
+        if (dist(cx, cy, logoCx, logoCy) >= LOGO_CLEARANCE) {
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) continue;
+      const axialRadius = randInt(1, 3);
+      buildCluster(svg, cx, cy, axialRadius, R_SMALL);
+    }
+  }
+
+  // ── ASC Logo ───────────────────────────────────────────────────────────────
+
+  function buildLogo(svg, midH, midS, midL) {
+    const R = 70;
+    const cx = 960;
+    const cy = 540;
+
+    // Shift upward by R/2 so the trio centroid sits on (cx, cy)
+    const logoOffsetY = -R / 2;
+
+    const positions = [
+      { letter: 'A', x: cx,                        y: cy + logoOffsetY },
+      { letter: 'S', x: cx - Math.SQRT3 * R / 2,  y: cy + logoOffsetY + 3 * R / 2 },
+      { letter: 'C', x: cx + Math.SQRT3 * R / 2,  y: cy + logoOffsetY + 3 * R / 2 },
+    ];
+
+    const letterL = clamp(midL - 40, 15, 45);
+    const letterColor = `hsl(${midH.toFixed(1)},${clamp(midS + 10, 30, 100).toFixed(1)}%,${letterL.toFixed(1)}%)`;
+
+    const g = makeSVGEl('g', { filter: 'url(#logoGlow)' });
+
+    positions.forEach(({ letter, x, y }) => {
+      g.appendChild(makeSVGEl('path', {
+        d: hexPath(x, y, R),
+        fill: 'rgba(255,255,255,0.92)',
+        stroke: 'rgba(255,255,255,0.65)',
+        'stroke-width': '2.5'
+      }));
+
+      const text = makeSVGEl('text', {
+        x: x.toFixed(2),
+        y: y.toFixed(2),
+        'text-anchor': 'middle',
+        'dominant-baseline': 'central',
+        'font-family': "'Inter', sans-serif",
+        'font-weight': '700',
+        'font-size': '62',
+        fill: letterColor
+      });
+      text.textContent = letter;
+      g.appendChild(text);
+    });
+
+    svg.appendChild(g);
+  }
+
+  // ── Main ───────────────────────────────────────────────────────────────────
+
+  function main() {
+    const svg  = document.getElementById('bg');
+    const defs = makeSVGEl('defs', {});
+    svg.appendChild(defs);
+
+    const { midH, midS, midL } = buildGradient(svg, defs);
+    buildLogoGlow(defs);
+    buildBackground(svg);
+
+    const logoCx = 960, logoCy = 540;
+    buildClusters(svg, logoCx, logoCy);
+    buildLogo(svg, midH, midS, midL);
+  }
+
+  main();
+})();
+
+// ── Font preload & download ────────────────────────────────────────────────
+
+// Fetch Inter Bold as a base64 data URI so it renders correctly when the SVG
+// is rasterized to a canvas (external font URLs are blocked by browser security
+// when SVGs are drawn via drawImage).
+let fontDataURI = null;
+
+(async function preloadFont() {
+  try {
+    const cssResp = await fetch(
+      'https://fonts.googleapis.com/css2?family=Inter:wght@700&display=swap',
+      { headers: { 'User-Agent': navigator.userAgent } }
+    );
+    const css = await cssResp.text();
+
+    // Collect all woff2 URLs; take the last one (latin subset, usually last)
+    const urls = [...css.matchAll(/url\((https:\/\/[^)]+?\.woff2[^)]*)\)/g)]
+      .map(m => m[1]);
+    if (!urls.length) return;
+
+    const fontUrl = urls[urls.length - 1];
+    const buf = await fetch(fontUrl).then(r => r.arrayBuffer());
+    const bytes = new Uint8Array(buf);
+    // Convert to base64 in chunks to avoid call-stack limits
+    let binary = '';
+    const CHUNK = 8192;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    fontDataURI = 'data:font/woff2;base64,' + btoa(binary);
+  } catch (e) {
+    // Font embedding failed; letters will use browser fallback font in exports
+    console.warn('Font preload failed:', e);
+  }
+})();
+
+async function downloadWallpaper(width, height, btn) {
+  const label = btn.textContent;
+  btn.textContent = 'Saving…';
+  btn.disabled = true;
+
+  try {
+    const svgEl = document.getElementById('bg');
+
+    // Clone and configure for target resolution
+    const clone = svgEl.cloneNode(true);
+    clone.setAttribute('width', width);
+    clone.setAttribute('height', height);
+    clone.setAttribute('viewBox', '0 0 1920 1080');
+    clone.setAttribute('preserveAspectRatio', 'xMidYMid slice');
+
+    // Inject embedded font so text renders in canvas rasterization
+    if (fontDataURI) {
+      const defs = clone.querySelector('defs') ||
+        clone.insertBefore(document.createElementNS('http://www.w3.org/2000/svg', 'defs'), clone.firstChild);
+      const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+      style.textContent = `@font-face{font-family:'Inter';font-weight:700;src:url('${fontDataURI}') format('woff2');}`;
+      defs.insertBefore(style, defs.firstChild);
+    }
+
+    const svgStr = new XMLSerializer().serializeToString(clone);
+    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+    const blobURL = URL.createObjectURL(blob);
+
+    await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width  = width;
+        canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        URL.revokeObjectURL(blobURL);
+
+        canvas.toBlob(pngBlob => {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(pngBlob);
+          a.download = `asc-wallpaper-${width}x${height}.png`;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+          resolve();
+        }, 'image/png');
+      };
+      img.onerror = reject;
+      img.src = blobURL;
+    });
+  } catch (e) {
+    console.error('Download failed:', e);
+    alert('Export failed. See console for details.');
+  } finally {
+    btn.textContent = label;
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>
