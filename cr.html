@@ -317,8 +317,8 @@
   }
 
   function buildLogo(svg) {
-    // CodeRefinery logo: 1914×1420 → display at 320×237, centered at (960,540)
-    const w = 320, h = Math.round(320 * 1420 / 1914);
+    // CodeRefinery logo: 1914×1420 → display at 240×178, centered at (960,540)
+    const w = 240, h = Math.round(240 * 1420 / 1914);
     svg.appendChild(makeSVGEl('image', {
       id: 'cr-logo',
       href: 'coderefinery.png',
@@ -377,42 +377,62 @@ async function downloadWallpaper(width, height, btn) {
   try {
     const svgEl = document.getElementById('bg');
 
+    // Clone SVG and strip the logo <image> element — relative URLs inside an
+    // SVG blob cannot be resolved by the canvas renderer. We draw the logo
+    // directly onto the canvas afterwards instead.
     const clone = svgEl.cloneNode(true);
     clone.setAttribute('width', width);
     clone.setAttribute('height', height);
     clone.setAttribute('viewBox', '0 0 1920 1080');
     clone.setAttribute('preserveAspectRatio', 'xMidYMid slice');
-
-    // Inject embedded logo so it renders during canvas rasterization
-    if (logoDataURI) {
-      const imgEl = clone.querySelector('#cr-logo');
-      if (imgEl) imgEl.setAttribute('href', logoDataURI);
-    }
+    const logoInClone = clone.querySelector('#cr-logo');
+    if (logoInClone) logoInClone.remove();
 
     const svgStr = new XMLSerializer().serializeToString(clone);
-    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
-    const blobURL = URL.createObjectURL(blob);
+    const svgBlob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+    const blobURL = URL.createObjectURL(svgBlob);
 
-    await new Promise((resolve, reject) => {
+    const canvas = await new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width  = width;
-        canvas.height = height;
-        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        const c = document.createElement('canvas');
+        c.width  = width;
+        c.height = height;
+        c.getContext('2d').drawImage(img, 0, 0, width, height);
         URL.revokeObjectURL(blobURL);
-
-        canvas.toBlob(pngBlob => {
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(pngBlob);
-          a.download = `cr-wallpaper-${width}x${height}.png`;
-          a.click();
-          setTimeout(() => URL.revokeObjectURL(a.href), 30000);
-          resolve();
-        }, 'image/png');
+        resolve(c);
       };
       img.onerror = reject;
       img.src = blobURL;
+    });
+
+    // Draw logo on top of the rasterised background.
+    // xMidYMid slice: scale = max(w/1920, h/1080); logo is centred at (960,540).
+    if (logoDataURI) {
+      const logoImg = await new Promise((resolve) => {
+        const li = new Image();
+        li.onload  = () => resolve(li);
+        li.onerror = () => resolve(null);
+        li.src = logoDataURI;
+      });
+      if (logoImg) {
+        const scale   = Math.max(width / 1920, height / 1080);
+        const logoW   = 240 * scale;
+        const logoH   = Math.round(240 * 1420 / 1914) * scale;
+        const ctx     = canvas.getContext('2d');
+        ctx.drawImage(logoImg, width / 2 - logoW / 2, height / 2 - logoH / 2, logoW, logoH);
+      }
+    }
+
+    await new Promise((resolve) => {
+      canvas.toBlob(pngBlob => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(pngBlob);
+        a.download = `cr-wallpaper-${width}x${height}.png`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+        resolve();
+      }, 'image/png');
     });
   } catch (e) {
     console.error('Download failed:', e);
