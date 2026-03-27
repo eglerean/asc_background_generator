@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeRefinery Background</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #1a3a6b; }
+    svg { display: block; width: 100%; height: 100%; }
+
+    #download-panel {
+      position: fixed;
+      bottom: 22px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 18px;
+      background: rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 14px;
+      color: rgba(255, 255, 255, 0.85);
+      font-family: system-ui, sans-serif;
+      font-size: 12px;
+      white-space: nowrap;
+      z-index: 100;
+    }
+
+    #download-panel .label {
+      font-size: 11px;
+      opacity: 0.65;
+      margin-right: 4px;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    #download-panel .sep {
+      width: 1px;
+      height: 18px;
+      background: rgba(255,255,255,0.2);
+      margin: 0 4px;
+    }
+
+    #download-panel button {
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 7px;
+      color: rgba(255, 255, 255, 0.9);
+      font-family: system-ui, sans-serif;
+      font-size: 11.5px;
+      font-weight: 700;
+      padding: 5px 11px;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+
+    #download-panel button:hover {
+      background: rgba(255, 255, 255, 0.22);
+    }
+
+    #download-panel button:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    #download-panel button.saving {
+      opacity: 0.55;
+    }
+  </style>
+</head>
+<body>
+<svg id="bg" xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 1920 1080"
+     preserveAspectRatio="xMidYMid slice"
+     overflow="hidden">
+</svg>
+
+<div id="download-panel">
+  <span class="label">Save wallpaper</span>
+  <div class="sep"></div>
+  <button onclick="downloadWallpaper(1920,1080,this)">1920×1080</button>
+  <button onclick="downloadWallpaper(2560,1440,this)">2560×1440</button>
+  <button onclick="downloadWallpaper(3840,2160,this)">3840×2160</button>
+  <div class="sep"></div>
+  <button onclick="downloadWallpaper(2560,1600,this)">2560×1600</button>
+  <button onclick="downloadWallpaper(3024,1964,this)">3024×1964</button>
+  <button onclick="downloadWallpaper(3456,2234,this)">3456×2234</button>
+  <button onclick="downloadWallpaper(5120,2880,this)">5120×2880</button>
+</div>
+
+<script>
+(function () {
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  // ── Utilities ──────────────────────────────────────────────────────────────
+
+  function rand(min, max) {
+    return Math.random() * (max - min) + min;
+  }
+
+  function randInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  function makeSVGEl(tag, attrs) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      el.setAttribute(k, v);
+    }
+    return el;
+  }
+
+  function dist(x1, y1, x2, y2) {
+    const dx = x1 - x2, dy = y1 - y2;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  Math.SQRT3 = Math.sqrt(3);
+
+  // ── Triangle geometry ──────────────────────────────────────────────────────
+
+  // Equilateral triangle path (pointy-up or pointy-down).
+  // R = circumradius (center to vertex).
+  function triPath(cx, cy, R, isDown) {
+    const baseAngle = isDown ? 90 : -90;
+    const pts = [0, 1, 2].map(i => {
+      const a = (baseAngle + i * 120) * Math.PI / 180;
+      return `${(cx + R * Math.cos(a)).toFixed(3)},${(cy + R * Math.sin(a)).toFixed(3)}`;
+    });
+    return `M ${pts.join(' L ')} Z`;
+  }
+
+  // BFS expansion from a central up-triangle outward N hops.
+  // Returns [{x, y, isDown}, ...] of triangle centers relative to (0,0).
+  //
+  // Adjacency (circumradius R, inradius = R/2, side = R√3):
+  //   Up   (x,y) → down at (x, y+R), (x−R√3/2, y−R/2), (x+R√3/2, y−R/2)
+  //   Down (x,y) → up   at (x, y−R), (x−R√3/2, y+R/2), (x+R√3/2, y+R/2)
+  function trianglesInBFS(N, R, skipChance = 0) {
+    const S = R * Math.SQRT3 / 2; // R√3/2
+
+    function key(x, y, d) {
+      return `${Math.round(x * 100)},${Math.round(y * 100)},${d ? 1 : 0}`;
+    }
+
+    function neighbors(x, y, isDown) {
+      if (!isDown) {
+        return [
+          { x,     y: y + R,   isDown: true },
+          { x: x - S, y: y - R / 2, isDown: true },
+          { x: x + S, y: y - R / 2, isDown: true },
+        ];
+      } else {
+        return [
+          { x,     y: y - R,   isDown: false },
+          { x: x - S, y: y + R / 2, isDown: false },
+          { x: x + S, y: y + R / 2, isDown: false },
+        ];
+      }
+    }
+
+    const visited = new Set();
+    const result = [];
+    const queue = [{ x: 0, y: 0, isDown: false, hop: 0 }];
+    visited.add(key(0, 0, false));
+    result.push({ x: 0, y: 0, isDown: false });
+
+    let qi = 0;
+    while (qi < queue.length) {
+      const { x, y, isDown, hop } = queue[qi++];
+      if (hop >= N) continue;
+      for (const n of neighbors(x, y, isDown)) {
+        const k = key(n.x, n.y, n.isDown);
+        if (!visited.has(k)) {
+          // skipChance causes irregular / asymmetric blobs
+          if (skipChance > 0 && Math.random() < skipChance) continue;
+          visited.add(k);
+          result.push(n);
+          queue.push({ ...n, hop: hop + 1 });
+        }
+      }
+    }
+
+    return result;
+  }
+
+  // ── Gradient background ────────────────────────────────────────────────────
+
+  const BASE_STOPS = [
+    { pos: 0,    h: 238, s: 60, l: 13 },
+    { pos: 0.38, h: 228, s: 52, l: 22 },
+    { pos: 0.63, h: 318, s: 28, l: 30 },
+    { pos: 0.82, h: 18,  s: 62, l: 40 },
+    { pos: 1,    h: 25,  s: 75, l: 48 },
+  ];
+
+  function buildGradient(svg, defs) {
+    const hueShift   = rand(-15, 15);
+    const angleDelta = rand(-20, 20);
+    const angle      = 10 + angleDelta;
+
+    const rad = (90 - angle) * Math.PI / 180;
+    const x1 = (0.5 - 0.5 * Math.cos(rad)).toFixed(4);
+    const y1 = (0.5 - 0.5 * Math.sin(rad)).toFixed(4);
+    const x2 = (0.5 + 0.5 * Math.cos(rad)).toFixed(4);
+    const y2 = (0.5 + 0.5 * Math.sin(rad)).toFixed(4);
+
+    const grad = makeSVGEl('linearGradient', {
+      id: 'bgGrad',
+      x1, y1, x2, y2,
+      gradientUnits: 'objectBoundingBox'
+    });
+
+    BASE_STOPS.forEach(stop => {
+      const h = stop.h + hueShift;
+      const s = clamp(stop.s + rand(-8, 8), 30, 100);
+      const l = clamp(stop.l + rand(-5, 5), 40, 90);
+      grad.appendChild(makeSVGEl('stop', {
+        offset: stop.pos,
+        'stop-color': `hsl(${h.toFixed(1)},${s.toFixed(1)}%,${l.toFixed(1)}%)`
+      }));
+    });
+
+    defs.appendChild(grad);
+  }
+
+  function buildBackground(svg) {
+    svg.appendChild(makeSVGEl('rect', {
+      x: 0, y: 0, width: 1920, height: 1080,
+      fill: 'url(#bgGrad)'
+    }));
+  }
+
+  // ── Center glow filter ─────────────────────────────────────────────────────
+
+  // Matches the style of buildLogoGlow in index.html but with a wider spread
+  // for the larger triangle cluster.
+  function buildCenterGlow(defs) {
+    const filter = makeSVGEl('filter', {
+      id: 'centerGlow',
+      x: '-40%', y: '-40%', width: '180%', height: '180%'
+    });
+    const blur = makeSVGEl('feGaussianBlur', { stdDeviation: '8', result: 'blur' });
+    const merge = makeSVGEl('feMerge', {});
+    merge.appendChild(makeSVGEl('feMergeNode', { in: 'blur' }));
+    merge.appendChild(makeSVGEl('feMergeNode', { in: 'SourceGraphic' }));
+    filter.appendChild(blur);
+    filter.appendChild(merge);
+    defs.appendChild(filter);
+  }
+
+  // ── Triangle clusters ──────────────────────────────────────────────────────
+
+  // Random BFS triangle cluster. skipChance (0–1) controls how many neighbor
+  // expansions are randomly skipped, producing irregular / asymmetric blobs.
+  function buildBFSCluster(svg, cx, cy, N, R, skipChance) {
+    const fillOpacity   = rand(0.07, 0.16).toFixed(3);
+    const strokeOpacity = rand(0.22, 0.42).toFixed(3);
+    const g = makeSVGEl('g', {
+      fill: `rgba(255,255,255,${fillOpacity})`,
+      stroke: `rgba(255,255,255,${strokeOpacity})`,
+      'stroke-width': '1.2'
+    });
+    for (const { x, y, isDown } of trianglesInBFS(N, R, skipChance)) {
+      g.appendChild(makeSVGEl('path', { d: triPath(cx + x, cy + y, R, isDown) }));
+    }
+    svg.appendChild(g);
+  }
+
+  function buildClusters(svg, logoCx, logoCy) {
+    const R_SMALL = 30;
+    const LOGO_CLEARANCE = 260;
+    const numClusters = randInt(3, 7);
+
+    for (let i = 0; i < numClusters; i++) {
+      let cx, cy, placed = false;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        cx = rand(0.05, 0.95) * 1920;
+        cy = rand(0.05, 0.95) * 1080;
+        if (dist(cx, cy, logoCx, logoCy) >= LOGO_CLEARANCE) {
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) continue;
+
+      // Random skip chance: 0 = symmetric blob, 0.4 = irregular/asymmetric
+      const skipChance = rand(0, 0.4);
+      buildBFSCluster(svg, cx, cy, randInt(1, 4), R_SMALL, skipChance);
+    }
+  }
+
+  // ── Center cluster + logo ──────────────────────────────────────────────────
+
+  function buildCenterCluster(svg) {
+    const cx = 960, cy = 540;
+    const R = 55;
+    const g = makeSVGEl('g', {
+      fill: 'rgba(255,255,255,0.92)',
+      stroke: 'rgba(255,255,255,0.70)',
+      'stroke-width': '2.0',
+      filter: 'url(#centerGlow)'
+    });
+    // N=3 gives ~28 triangles at R=55; no skip so the cluster is solid
+    for (const { x, y, isDown } of trianglesInBFS(3, R)) {
+      g.appendChild(makeSVGEl('path', { d: triPath(cx + x, cy + y, R, isDown) }));
+    }
+    svg.appendChild(g);
+  }
+
+  function buildLogo(svg) {
+    // CodeRefinery logo: 1914×1420 → display at 320×237, centered at (960,540)
+    const w = 320, h = Math.round(320 * 1420 / 1914);
+    svg.appendChild(makeSVGEl('image', {
+      id: 'cr-logo',
+      href: 'coderefinery.png',
+      x: 960 - w / 2,
+      y: 540 - h / 2,
+      width: w,
+      height: h
+    }));
+  }
+
+  // ── Main ───────────────────────────────────────────────────────────────────
+
+  function main() {
+    const svg  = document.getElementById('bg');
+    const defs = makeSVGEl('defs', {});
+    svg.appendChild(defs);
+
+    buildGradient(svg, defs);
+    buildCenterGlow(defs);
+    buildBackground(svg);
+
+    const logoCx = 960, logoCy = 540;
+    buildClusters(svg, logoCx, logoCy);
+    buildCenterCluster(svg);
+    buildLogo(svg);
+  }
+
+  main();
+})();
+
+// ── Logo preload & download ────────────────────────────────────────────────
+
+// Preload coderefinery.png as a base64 data URI so it renders correctly when
+// the SVG is rasterized to a canvas (external URLs are blocked by security).
+let logoDataURI = null;
+
+(async function preloadLogo() {
+  try {
+    const blob = await fetch('coderefinery.png').then(r => r.blob());
+    logoDataURI = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = e => resolve(e.target.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch (e) {
+    console.warn('Logo preload failed:', e);
+  }
+})();
+
+async function downloadWallpaper(width, height, btn) {
+  const label = btn.textContent;
+  btn.textContent = 'Saving…';
+  btn.disabled = true;
+
+  try {
+    const svgEl = document.getElementById('bg');
+
+    const clone = svgEl.cloneNode(true);
+    clone.setAttribute('width', width);
+    clone.setAttribute('height', height);
+    clone.setAttribute('viewBox', '0 0 1920 1080');
+    clone.setAttribute('preserveAspectRatio', 'xMidYMid slice');
+
+    // Inject embedded logo so it renders during canvas rasterization
+    if (logoDataURI) {
+      const imgEl = clone.querySelector('#cr-logo');
+      if (imgEl) imgEl.setAttribute('href', logoDataURI);
+    }
+
+    const svgStr = new XMLSerializer().serializeToString(clone);
+    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+    const blobURL = URL.createObjectURL(blob);
+
+    await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width  = width;
+        canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        URL.revokeObjectURL(blobURL);
+
+        canvas.toBlob(pngBlob => {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(pngBlob);
+          a.download = `cr-wallpaper-${width}x${height}.png`;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+          resolve();
+        }, 'image/png');
+      };
+      img.onerror = reject;
+      img.src = blobURL;
+    });
+  } catch (e) {
+    console.error('Download failed:', e);
+    alert('Export failed. See console for details.');
+  } finally {
+    btn.textContent = label;
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>
