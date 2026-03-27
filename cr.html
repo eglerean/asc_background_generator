@@ -407,21 +407,20 @@ async function downloadWallpaper(width, height, btn) {
     });
 
     // Draw logo on top of the rasterised background.
-    // xMidYMid slice: scale = max(w/1920, h/1080); logo is centred at (960,540).
-    if (logoDataURI) {
-      const logoImg = await new Promise((resolve) => {
-        const li = new Image();
-        li.onload  = () => resolve(li);
-        li.onerror = () => resolve(null);
-        li.src = logoDataURI;
-      });
-      if (logoImg) {
-        const scale   = Math.max(width / 1920, height / 1080);
-        const logoW   = 240 * scale;
-        const logoH   = Math.round(240 * 1420 / 1914) * scale;
-        const ctx     = canvas.getContext('2d');
-        ctx.drawImage(logoImg, width / 2 - logoW / 2, height / 2 - logoH / 2, logoW, logoH);
-      }
+    // Use logoDataURI if preloaded; otherwise fall back to the relative URL
+    // (same-origin on GitHub Pages → no canvas taint).
+    // xMidYMid slice: scale = max(w/1920, h/1080); logo SVG-centre is (960,540).
+    const logoImg = await new Promise((resolve) => {
+      const li = new Image();
+      li.onload  = () => resolve(li);
+      li.onerror = () => resolve(null);
+      li.src = logoDataURI || 'coderefinery.png';
+    });
+    if (logoImg) {
+      const scale = Math.max(width / 1920, height / 1080);
+      const logoW = 240 * scale;
+      const logoH = Math.round(240 * 1420 / 1914) * scale;
+      canvas.getContext('2d').drawImage(logoImg, width / 2 - logoW / 2, height / 2 - logoH / 2, logoW, logoH);
     }
 
     await new Promise((resolve) => {
